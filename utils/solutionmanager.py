@@ -162,8 +162,9 @@ class SolutionManager():
         output_size = case_data.output_size
         limits = case_data.get_limits()
         data, target = case_data.train_data
-        cpuSpeed = CpuSpeed()
-        time_mult = cpuSpeed.calc_time_mult()
+        #cpuSpeed = CpuSpeed()
+        #time_mult = cpuSpeed.calc_time_mult()
+        time_mult = 1.0
         torch.manual_seed(case_data.number)
         timer = Timer(limits.time_limit, time_mult)
         model = solution.create_model(input_size, output_size)

@@ -11,47 +11,86 @@ import torch.optim as optim
 import sys
 sys.path.append('./../utils')
 import solutionmanager as sm
+from gridsearch import GridSearch
 
 class SolutionModel(nn.Module):
-    def __init__(self, input_size, output_size):
+    def __init__(self, input_size, output_size, solution):
         super(SolutionModel, self).__init__()
         self.input_size = input_size
-        sm.SolutionManager.print_hint("Hint[1]: Explore more deep neural networks")
-        self.hidden_size = 10
-        self.linear1 = nn.Linear(input_size, self.hidden_size)
-        self.linear2 = nn.Linear(self.hidden_size, output_size)
+        self.output_size = output_size
+        self.solution = solution
+        # different seed for removing noise
+        if self.solution.grid_search.enabled:
+            torch.manual_seed(solution.random)
+        self.hidden_size = self.solution.hidden_size
+        self.linears = nn.ModuleList([nn.Linear(self.input_size if i == 0 else self.hidden_size, self.hidden_size if i != self.solution.layers_number -1 else self.output_size) for i in range(self.solution.layers_number)])
+        self.batch_norms = nn.ModuleList([nn.BatchNorm1d(self.hidden_size if i != self.solution.layers_number-1 else self.output_size, track_running_stats=False) for i in range(self.solution.layers_number)])
 
     def forward(self, x):
-        x = self.linear1(x)
-        x = F.sigmoid(x)
-        x = self.linear2(x)
-        x = F.sigmoid(x)
+        for i in range(len(self.linears)):
+            x = self.linears[i](x)
+            if self.solution.do_batch_norm:
+                x = self.batch_norms[i](x)
+            act_function = self.solution.activation_output if i == len(self.linears)-1 else self.solution.activation_hidden
+            x = self.solution.activations[act_function](x)
         return x
 
 class Solution():
     def __init__(self):
         self = self
+        self.best_step = 1000
+        self.activations = {
+            'sigmoid': nn.Sigmoid(),
+            'relu': nn.ReLU(),
+            'rrelu0103': nn.RReLU(0.1, 0.3),
+            'elu': nn.ELU(),
+            'selu': nn.SELU(),
+            'leakyrelu01': nn.LeakyReLU(0.1)
+        }
+        self.learning_rate = 0.003
+        self.momentum = 0.8
+        self.layers_number = 5
+        self.hidden_size = 50
+        self.activation_hidden = 'relu'
+        self.activation_output = 'sigmoid'
+        self.do_batch_norm = True
+        self.sols = {}
+        self.solsSum = {}
+        self.random = 0
+        #self.do_batch_norm_grid = [False, True]
+        self.random_grid = [_ for _ in range(10)]
+        #self.layers_number_grid = [3, 4, 5, 6, 7, 8, 9, 10]
+        #self.hidden_size_grid = [10, 20, 30, 40, 50]
+        self.momentum_grid = [0.0, 0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        #self.learning_rate_grid = [0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009, 0.01]
+        #self.activation_hidden_grid = self.activations.keys()
+        #self.activation_output_grid = self.activations.keys()
+        self.grid_search = GridSearch(self)
+        self.grid_search.set_enabled(False)
 
     def create_model(self, input_size, output_size):
-        return SolutionModel(input_size, output_size)
+        return SolutionModel(input_size, output_size, self)
+
+    def get_key(self):
+        return "{}_{}_{}_{}_{}_{}_{}".format(self.learning_rate, self.momentum, self.hidden_size, self.activation_hidden, self.activation_output, self.do_batch_norm, "{0:03d}".format(self.layers_number));
 
     # Return number of steps used
     def train_model(self, model, train_data, train_target, context):
+        key = self.get_key()
+        if key in self.sols and self.sols[key] == -1:
+            return
         step = 0
         # Put model in train mode
         model.train()
+        # Note: we need to move this out of circle, since we need to save state for momentum to work
+        optimizer = optim.SGD(model.parameters(), lr=self.learning_rate, momentum=self.momentum)
         while True:
             time_left = context.get_timer().get_time_left()
-            # No more time left, stop training
-            if time_left < 0.1:
-                break
-            optimizer = optim.SGD(model.parameters(), lr=1.0)
             data = train_data
             target = train_target
             # model.parameters()...gradient set to zero
             optimizer.zero_grad()
             # evaluate model => model.forward(data)
-            sm.SolutionManager.print_hint("Hint[2]: Explore other activation functions", step)
             output = model(data)
             # if x < 0.5 predict 0 else predict 1
             predict = output.round()
@@ -59,13 +98,21 @@ class Solution():
             correct = predict.eq(target.view_as(predict)).long().sum().item()
             # Total number of needed predictions
             total = target.view(-1).size(0)
+            if correct == total or time_left < 0.1 or (self.grid_search.enabled and step > 100):
+                if not key in self.sols:
+                    self.sols[key] = 0
+                    self.solsSum[key] = 0
+                self.sols[key] += 1
+                self.solsSum[key] += step
+                if self.sols[key] == len(self.random_grid):
+                    print("{} {:.4f}".format(key, float(self.solsSum[key])/self.sols[key]))
+                break
             # calculate loss
-            sm.SolutionManager.print_hint("Hint[3]: Explore other loss functions", step)
             loss = ((output-target)**2).sum()
             # calculate deriviative of model.forward() and put it in model.parameters()...gradient
             loss.backward()
             # print progress of the learning
-            self.print_stats(step, loss, correct, total)
+            #self.print_stats(step, loss, correct, total)
             # update model: model.parameters() -= lr * gradient
             optimizer.step()
             step += 1
@@ -119,4 +166,5 @@ class Config:
         return Solution()
 
 # If you want to run specific case, put number here
+#Note: we need to search on case=10, since it is biggest
 sm.SolutionManager(Config()).run(case_number=-1)

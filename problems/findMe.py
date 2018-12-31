@@ -13,43 +13,62 @@ sys.path.append('./../utils')
 import solutionmanager as sm
 
 class SolutionModel(nn.Module):
-    def __init__(self, input_size, output_size):
+    def __init__(self, input_size, output_size, solution):
         super(SolutionModel, self).__init__()
+
+        self.solution = solution
+        # different seed for removing noise
         self.input_size = input_size
-        self.hidden_size = 32
-        self.linear1 = nn.Linear(input_size, self.hidden_size)
-        self.linear2 = nn.Linear(self.hidden_size, self.hidden_size)
-        self.linear3 = nn.Linear(self.hidden_size, output_size)
+        self.output_size = output_size
+        self.hidden_size = self.solution.hidden_size
+        self.layers_size = [input_size] + [self.hidden_size for i in range(self.solution.layers_number)] + [output_size]
+        self.linears = nn.ModuleList([
+            nn.Linear(from_size, to_size)
+                for (from_size, to_size) in zip(self.layers_size, self.layers_size[1:])
+        ])
+        self.batch_norms = nn.ModuleList([
+            nn.BatchNorm1d(batch_size)
+                for batch_size in self.layers_size[1:]
+        ])
+        self.activations = [F.relu for size in self.layers_size[2:]] + [F.sigmoid]
 
     def forward(self, x):
-        x = self.linear1(x)
-        x = F.relu(x)
-        x = self.linear2(x)
-        x = F.relu(x)
-        x = self.linear3(x)
-        x = F.sigmoid(x)
+        for i in range(len(self.linears)):
+            x = self.linears[i](x)
+            x = self.batch_norms[i](x)
+            x = self.activations[i](x)
         return x
 
 class Solution():
     def __init__(self):
-        self = self
+        self.learning_rate = 0.1
+        self.momentum = 0.8
+        self.layers_number = 3
+        self.hidden_size = 32
+        self.batch_size = 128
 
     def create_model(self, input_size, output_size):
-        return SolutionModel(input_size, output_size)
+        return SolutionModel(input_size, output_size, self)
 
     # Return number of steps used
     def train_model(self, model, train_data, train_target, context):
         step = 0
         # Put model in train mode
         model.train()
+        batches = int(train_data.size(0)/self.batch_size)
+        goodCount = 0
+        goodLimit = batches
+        optimizer = optim.SGD(model.parameters(), lr=self.learning_rate, momentum=self.momentum)
         while True:
+            ind = step%batches
+            start_ind = self.batch_size * ind
+            end_ind = start_ind + self.batch_size
+            data = train_data[start_ind:end_ind]
+            target = train_target[start_ind:end_ind]
             time_left = context.get_timer().get_time_left()
             # No more time left, stop training
             if time_left < 0.1:
                 break
-            optimizer = optim.SGD(model.parameters(), lr=1)
-            data = train_data
-            target = train_target
             # model.parameters()...gradient set to zero
             optimizer.zero_grad()
             # evaluate model => model.forward(data)
@@ -63,6 +82,13 @@ class Solution():
             # calculate loss
             bce_loss = nn.BCELoss()
             loss = bce_loss(output, target)
+            diff = (output.data-target.data).abs()
+            if diff.max() < 0.3:
+                goodCount += 1
+                if goodCount >= goodLimit:
+                    break
+            else:
+                goodCount = 0
             # calculate deriviative of model.forward() and put it in model.parameters()...gradient
             loss.backward()
             # print progress of the learning

@@ -18,64 +18,90 @@ class SolutionModel(nn.Module):
         super(SolutionModel, self).__init__()
         self.input_size = input_size
         self.output_size = output_size
-        sm.SolutionManager.print_hint("Hint[1]: Experement with more deep networks")
-        self.hidden_size = 10
-        self.linear1 = nn.Linear(self.input_size, self.hidden_size)
-        sm.SolutionManager.print_hint("Hint[2]: You probably would need convolution network for this task")
-        self.linear2 = nn.Linear(self.hidden_size, self.output_size)
+        self.bn2d2 = nn.BatchNorm2d(5)
+        self.bn2d3 = nn.BatchNorm2d(20)
+        self.conv1 = nn.Conv2d(1, 5, kernel_size=3)
+        self.conv2 = nn.Conv2d(5, 20, kernel_size=3)
+        self.conv3 = nn.Conv2d(20, 40, kernel_size=2)
+        self.bn1 = nn.BatchNorm1d(160)
+        self.bn2 = nn.BatchNorm1d(100)
+        self.fc1 = nn.Linear(160, 100)
+        self.fc2 = nn.Linear(100, 10)
 
     def forward(self, x):
-        x = x.view(-1, self.input_size)
-        x = self.linear1(x)
-        x = F.sigmoid(x)
-        x = self.linear2(x)
+        x = (x-0.1215)/0.3011
+        x = self.conv1(x)
+        x = F.relu(F.max_pool2d(x, 2))
+        x = self.bn2d2(x)
+        x = F.relu(F.max_pool2d(self.conv2(x), 2))
+        x = self.bn2d3(x)
+        x = F.relu(F.max_pool2d(self.conv3(x), 2))
+        x = x.view(x.size()[0], -1)
+        x = self.bn1(x)
+        x = F.relu(self.fc1(x))
+        x = self.bn2(x)
+        x = self.fc2(x)
         x = F.log_softmax(x, dim=1)
         return x
 
-class Solution():
-    def __init__(self):
-        self = self
+    def calcModelGradNorm(self):
+        model = self
+        grads = [param.grad.data.view(-1) for param in model.parameters() if param.grad is not None]
+        return torch.cat(grads).abs().mean()
 
+class Solution():
     def create_model(self, input_size, output_size):
         return SolutionModel(input_size, output_size)
 
     # Return number of steps used
     def train_model(self, model, train_data, train_target, context):
         step = 0
-        # Put model in train mode
-        model.train()
         while True:
             time_left = context.get_timer().get_time_left()
             # No more time left, stop training
-            if time_left < 0.1:
+            if time_left < 0.03:
                 break
-            optimizer = optim.SGD(model.parameters(), lr=1.0)
-            sm.SolutionManager.print_hint("Hint[3]: Experement with approximating deriviative based on subset of data", step)
-            data = train_data
-            target = train_target
-            # model.parameters()...gradient set to zero
+            # Put model in train mode
+            model.train()
+            optimizer = optim.SGD(model.parameters(), lr=0.01)
+            # Wrap tensor, so we can calculate deriviative
+            #printHint("Hint[3]: Experement with approximating deriviative based on subset of data", step)
+            batch_size = 64
+            batches = train_target.size()[0]/batch_size
+            batchId = step%batches
+            startInd = batchId * batch_size
+            endInd = startInd + batch_size
+            data = train_data[startInd:endInd,:,:,:]
+            target = train_target[startInd:endInd]
             optimizer.zero_grad()
             # evaluate model => model.forward(data)
-            sm.SolutionManager.print_hint("Hint[4]: Experement with other activation fuctions", step)
+            #printHint("Hint[4]: Experement with other activation fuctions", step)
             output = model(data)
             # get the index of the max probability
-            predict = output.max(1, keepdim=True)[1]
+            predict = output.data.max(1, keepdim=True)[1]
             # Number of correct predictions
-            correct = predict.eq(target.view_as(predict)).long().sum().item()
+            correct = predict.eq(target.data.view_as(predict))
+            correct = correct.long()
+            correct = correct.sum()
             # Total number of needed predictions
-            total = target.view(-1).size(0)
+            total = target.data.view(-1).size()[0]
             # calculate loss
             loss = F.nll_loss(output, target)
             # calculate deriviative of model.forward() and put it in model.parameters()...gradient
             loss.backward()
             # print progress of the learning
-            self.print_stats(step, loss, correct, total)
+            self.printStats(step, loss, correct, total)
             # update model: model.parameters() -= lr * gradient
+            # faster in the beginning, slower in the end
+            lr = 0.002 * max(time_left, 0.3)
+            # we always move same distance, this should be more stable
+            lr=lr/max(model.calcModelGradNorm(), 1e-7)
+            optimizer = optim.SGD(model.parameters(), lr=lr)
             optimizer.step()
             step += 1
         return step
     
-    def print_stats(self, step, loss, correct, total):
+    def printStats(self, step, loss, correct, total):
         if step % 100 == 0:
             print("Step = {} Prediction = {}/{} Error = {}".format(step, correct, total, loss.item()))
 
